@@ -6,10 +6,10 @@ from os.path import dirname, join, exists
 from os import remove, listdir
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageColor
+from PIL import Image, ImageDraw, ImageColor
 import cv2
 
-from hoshino import Service, R, aiorequests
+from hoshino import Service, aiorequests
 from hoshino.typing import *
 from hoshino.util import FreqLimiter, concat_pic, pic2b64
 
@@ -18,76 +18,25 @@ from .. import chara
 from .. import _pcr_data
 from . import sv
 from . import arena
+from .query_provider import query_candidates, select_results
+from .result_image import render_result_card
 
-try:
-    thumb_up_a = R.img('priconne/gadget/thumb-up-a.png').open().resize((16, 16), Image.LANCZOS)
-    thumb_down_a = R.img('priconne/gadget/thumb-down-a.png').open().resize((16, 16), Image.LANCZOS)
-except Exception as e:
-    sv.logger.warning(f"pcr-arena 模块缺少 点赞（priconne/gadget/thumb-up-a.png）和/或 点踩（priconne/gadget/thumb-down-a.png）图标资源，将改用文字代替。")
+async def render_atk_def_teams(entries, *, defense_teams=()):
+    def get_character(uid: int):
+        try:
+            return chara.fromid(9000 if uid == 1000 else uid)
+        except (LookupError, ValueError):
+            return None
 
-async def render_atk_def_teams(entries, border_pix=5):
-    '''
-    entries = [ {'atk': [int], 'up': int, 'down': int } ]
-    '''
-    n = len(entries)
-    icon_size = 64
-    small_icon_size = 32
-    im = Image.new('RGBA', (5 * icon_size + 100, n * (icon_size + border_pix) - border_pix), (255, 255, 255, 255))
-    font = ImageFont.truetype('msyh.ttc', 16)
-    draw = ImageDraw.Draw(im)
-    for i, e in enumerate(entries):
-        if len(e) == 0:  # [] 视为空行
-            continue
+    def character_name(uid: int) -> str:
+        return getattr(get_character(uid), "name", str(uid))
 
-        y1 = i * (icon_size + border_pix)
-        y2 = y1 + icon_size
-
-        if e == "placeholder":  # 输出五个佑树
-            e = {'atk': [chara.fromid(9000) for _ in range(5)], "team_type": "youshu"}
-
-        # e此时只能是dict了
-        for j, c in enumerate(e['atk']):
-            x1 = j * icon_size
-            x2 = x1 + icon_size
-            try:
-                icon = await c.render_icon(icon_size)  # 如使用旧版hoshino（不返回结果），请去掉await
-                im.paste(icon, (x1, y1, x2, y2), icon)
-            except:
-                icon = c.render_icon(icon_size)
-                im.paste(icon, (x1, y1, x2, y2), icon)
-
-        x1 = 5 * icon_size + 10
-        if e["team_type"] == "normal":
-            x2 = x1 + 16
-            try:
-                im.paste(thumb_up_a, (x1, y1 + 12, x2, y1 + 28), thumb_up_a)
-            except:
-                draw.text((x1, y1 + 10), f"赞", (0, 0, 0, 255), font)
-            try:
-                im.paste(thumb_down_a, (x1, y1 + 39, x2, y1 + 55), thumb_down_a)
-            except:
-                draw.text((x1, y1 + 35), f"踩", (0, 0, 0, 255), font)
-            draw.text((x1 + 25, y1 + 10), f"{e['up']}", (0, 0, 0, 255), font)
-            draw.text((x1 + 25, y1 + 35), f"{e['down']}", (0, 0, 0, 255), font)
-        elif e["team_type"] == "approximation":
-            draw.text((x1, y1 + 22), f"近似解", (0, 0, 0, 255), font)
-        elif "approximation" in e["team_type"]:
-            _, uid_4_1_str, uid_4_2_str = e["team_type"].split(' ')
-            draw.text((x1, y1 - 3), f"近似解", (0, 0, 0, 255), font)
-
-            chara_1 = chara.fromid(int(uid_4_1_str))
-            icon_1 = await chara_1.render_icon(small_icon_size)
-            im.paste(icon_1, (x1, y1 + 26), icon_1)
-
-            draw.text((x1 + 33, y1 + 32), f"→", (0, 0, 0, 255), font)
-
-            chara_2 = chara.fromid(int(uid_4_2_str))
-            icon_2 = await chara_2.render_icon(small_icon_size)
-            im.paste(icon_2, (x1 + 50, y1 + 26), icon_2)
-        elif e["team_type"] == "frequency":
-            draw.text((x1, y1 + 22), f"高频解", (0, 0, 0, 255), font)
-
-    return im
+    return await render_result_card(
+        entries,
+        defense_groups=[[get_character(uid) for uid in team] for team in defense_teams],
+        placeholder=lambda: get_character(9000),
+        character_name=character_name,
+    )
 
 
 async def getBox(img):
@@ -654,10 +603,10 @@ async def generateCollisionFreeTeam(bot: HoshinoBot, ev: CQEvent, all_query_reco
 
     if collision_free_match_cnt:
         # print(f'\n\n总共无冲配队数={collision_free_match_cnt} len(outp_render)={len(outp_render)}')  # test
-        teams = await render_atk_def_teams(outp_render[:-1])
+        teams = await render_atk_def_teams(outp_render[:-1], defense_teams=boxDict)
         await bot.finish(ev, str(MessageSegment.image(pic2b64(teams))))
     elif collision_free_match_cnt_2:
-        teams = await render_atk_def_teams(outp_render_2[:-1])
+        teams = await render_atk_def_teams(outp_render_2[:-1], defense_teams=boxDict)
         await bot.finish(ev, str(MessageSegment.image(pic2b64(teams))))
     else:
         if len(all_query_records) == 2:  # 查两队
@@ -724,33 +673,35 @@ async def __arena_query(bot, ev: CQEvent, region: int, defen, raw=0, only_use_ca
     if any(chara.is_npc(i) for i in defen):
         await bot.finish(ev, '编队中含未实装角色', at_sender=True)
 
-    key = ''.join([str(x) for x in sorted(defen)]) + str(region)
-    res = await arena.do_query(defen, region, -1 if only_use_cache else 1)
+    defense_ids = tuple(defen)
+    res = await query_candidates(defen, region, only_use_cache)
+    notices = getattr(res, "notices", [])
+    if notices:
+        await bot.send(ev, "\n".join(notices))
 
     defen = [chara.fromid(x).name for x in defen]
     defen = f"防守方【{' '.join(defen)}】"
 
     # 处理查询结果
     if res is None:
-        remove_buffer(key)
+        # Model/network failures must not delete a still-useful original query cache.
         if not raw:
             await bot.finish(ev, f'{defen}\npcrdfans未返回数据')
         else:
             return []
     if not len(res):
-        remove_buffer(key)
         if not raw:
             await bot.finish(ev, f'{defen}\n未查询到解法')
         else:
             return []
 
     if raw:
-        return res
+        return select_results(res, 24)  # At most25^3 PJJC combinations, including each placeholder.
 
     # 发送回复
-    res = res[:10]  # 限制显示数量，截断结果
+    res = select_results(res, 10)  # Preserve database rows and a few model rows on simulation degradation.
     sv.logger.info('Arena generating picture...')
-    teams = await render_atk_def_teams(res)
+    teams = await render_atk_def_teams(res, defense_teams=(defense_ids,))
     teams = pic2b64(teams)
     teams = MessageSegment.image(teams)
     sv.logger.info('Arena picture ready!')
